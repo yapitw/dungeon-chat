@@ -1,0 +1,98 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model World {
+  id          String   @id @default(uuid())
+  name        String
+  description String
+  system      String   @default("dnd5e")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  characters   Character[]
+  relationships CharacterRelationship[]
+  memories     MemoryEntry[]
+  messages     ConversationMessage[]
+}
+
+model Character {
+  id          String   @id @default(uuid())
+  worldId     String
+  name        String
+  title       String
+  avatar      String
+  color       String
+
+  // Personality
+  personality String   @default("[]") // JSON array stored as string for SQLite
+  speechPattern String
+  greeting    String
+  backstory   String
+
+  // State
+  disposition Int      @default(0)
+  isAlive    Boolean  @default(true)
+  locationId String?
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  world       World      @relation(fields: [worldId], references: [id], onDelete: Cascade)
+  memories    MemoryEntry[]
+  messages    ConversationMessage[]
+
+  sourceRelationships CharacterRelationship[] @relation("SourceCharacter")
+  targetRelationships CharacterRelationship[] @relation("TargetCharacter")
+}
+
+model CharacterRelationship {
+  id          String  @id @default(uuid())
+  worldId     String
+  sourceCharacterId String
+  targetCharacterId String
+  relationType String
+  label       String?
+  strength    Int     @default(50)
+  isSecret    Boolean @default(false)
+  description String
+
+  world          World       @relation(fields: [worldId], references: [id], onDelete: Cascade)
+  sourceCharacter Character @relation("SourceCharacter", fields: [sourceCharacterId], references: [id], onDelete: Cascade)
+  targetCharacter Character @relation("TargetCharacter", fields: [targetCharacterId], references: [id], onDelete: Cascade)
+}
+
+model MemoryEntry {
+  id          String   @id @default(uuid())
+  characterId String
+  worldId     String
+  content     String
+  relevance   Int      @default(7)
+  createdAt   DateTime @default(now())
+
+  character Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  world     World     @relation(fields: [worldId], references: [id], onDelete: Cascade)
+}
+
+model ConversationMessage {
+  id          String   @id @default(uuid())
+  characterId String
+  worldId     String
+  role        String   // "user" or "character"
+  content     String
+  createdAt   DateTime @default(now())
+
+  character Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  world     World     @relation(fields: [worldId], references: [id], onDelete: Cascade)
+}
+
+model Settings {
+  id            String  @id @default("default")
+  openaiApiKey  String?
+  model         String  @default("anthropic/claude-3-haiku")
+}

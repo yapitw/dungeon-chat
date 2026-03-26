@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
-import { useLiveQuery } from 'dexie-react-hooks'
 import { useNavigate } from '@tanstack/react-router'
-import { db } from '../lib/db'
+import { api } from '../lib/api'
 import { initOpenAI, hasOpenAI, testConnection } from '../lib/ai'
 import { ArrowLeft, Save, Key, Check, AlertCircle } from 'lucide-react'
 
@@ -18,7 +17,6 @@ const MODELS = [
 
 export default function SettingsPage() {
   const navigate = useNavigate()
-  const settings = useLiveQuery(() => db.settings.get('default'))
   
   const [apiKey, setApiKey] = useState('')
   const [model, setModel] = useState('anthropic/claude-3-haiku')
@@ -27,28 +25,30 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState(false)
 
   useEffect(() => {
-    if (settings) {
+    loadSettings()
+  }, [])
+
+  const loadSettings = async () => {
+    try {
+      const settings = await api.settings.get()
       setApiKey(settings.openaiApiKey || '')
       setModel(settings.model || 'anthropic/claude-3-haiku')
+      if (settings.openaiApiKey) {
+        initOpenAI(settings.openaiApiKey)
+      }
+    } catch (e) {
+      console.error('Failed to load settings:', e)
     }
-  }, [settings])
+  }
 
   const handleSave = async () => {
     setError(null)
 
-    // Validate API key format
-    if (apiKey && apiKey.length < 10) {
-      setError('API key seems too short')
-      return
-    }
-
-    await db.settings.put({
-      id: 'default',
-      openaiApiKey: apiKey || undefined,
+    await api.settings.update({
+      openaiApiKey: apiKey || null,
       model,
     })
 
-    // Initialize with API key
     if (apiKey) {
       initOpenAI(apiKey)
     }
@@ -83,7 +83,6 @@ export default function SettingsPage() {
 
   return (
     <div className="min-h-screen bg-[#0f0f1a] text-white">
-      {/* Header */}
       <header className="border-b border-[#1e1e3f] px-6 py-4">
         <div className="max-w-2xl mx-auto flex items-center gap-4">
           <button
@@ -97,7 +96,6 @@ export default function SettingsPage() {
       </header>
 
       <main className="max-w-2xl mx-auto px-6 py-8">
-        {/* OpenRouter Section */}
         <div className="bg-[#16213e] rounded-xl border border-[#0f3460] p-6 mb-6">
           <div className="flex items-center gap-3 mb-4">
             <div className="w-10 h-10 rounded-lg bg-[#10a37f]/20 flex items-center justify-center">
@@ -157,9 +155,6 @@ export default function SettingsPage() {
                   <option key={m.id} value={m.id}>{m.name}</option>
                 ))}
               </select>
-              <p className="text-xs text-gray-500 mt-1">
-                Different models have different capabilities and pricing
-              </p>
             </div>
 
             {error && (
@@ -179,32 +174,13 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* Model Info */}
-        <div className="bg-[#16213e] rounded-xl border border-[#0f3460] p-6 mb-6">
-          <h2 className="font-semibold mb-4">Available Models</h2>
-          <div className="space-y-2 text-sm">
-            <p className="text-gray-400">
-              OpenRouter provides access to models from multiple providers:
-            </p>
-            <ul className="list-disc list-inside text-gray-400 space-y-1">
-              <li><span className="text-white">Anthropic</span> - Claude family</li>
-              <li><span className="text-white">OpenAI</span> - GPT family</li>
-              <li><span className="text-white">Google</span> - Gemini family</li>
-              <li><span className="text-white">Meta</span> - Llama family</li>
-              <li><span className="text-white">Mistral</span> - Mistral family</li>
-            </ul>
-            <p className="text-gray-500 text-xs mt-3">
-              Some models are free, others pay-per-use. Check OpenRouter for pricing.
-            </p>
-          </div>
-        </div>
-
-        {/* About Section */}
         <div className="bg-[#16213e] rounded-xl border border-[#0f3460] p-6">
           <h2 className="font-semibold mb-4">About</h2>
           <div className="text-sm text-gray-400 space-y-2">
             <p><strong className="text-white">Dungeon Chat</strong> v1.0</p>
             <p>Chat with fantasy characters powered by AI via OpenRouter.</p>
+            <p>Backend: Express + Prisma + SQLite</p>
+            <p>Frontend: React + TanStack Router + Tailwind CSS</p>
           </div>
         </div>
       </main>

@@ -1,7 +1,5 @@
-import { db, type Character } from './db'
-
 let apiKey: string | null = null
-let baseURL = 'https://openrouter.ai/api/v1'
+const baseURL = 'https://openrouter.ai/api/v1'
 
 export function initOpenAI(key: string) {
   apiKey = key
@@ -15,86 +13,24 @@ export function getAPIKey(): string | null {
   return apiKey
 }
 
-async function getCharacterContext(character: Character, worldId: string): Promise<string> {
-  const memories = await db.memories
-    .where('characterId')
-    .equals(character.id)
-    .reverse()
-    .sortBy('createdAt')
-  
-  const relationships = await db.relationships
-    .where('worldId')
-    .equals(worldId)
-    .filter(r => r.sourceCharacterId === character.id || r.targetCharacterId === character.id)
-    .toArray()
-
-  const relationshipDescriptions: string[] = []
-  for (const rel of relationships) {
-    const isSource = rel.sourceCharacterId === character.id
-    const otherId = isSource ? rel.targetCharacterId : rel.sourceCharacterId
-    const otherChar = await db.characters.get(otherId)
-    if (!otherChar) continue
-    
-    const direction = isSource ? '->' : '<-'
-    const label = rel.label ? `: ${rel.label}` : ''
-    relationshipDescriptions.push(`${direction} ${otherChar.name} (${rel.relationType}${label}): ${rel.description}`)
-  }
-
-  const relationshipText = relationshipDescriptions.join('\n')
-  const memoryText = memories.length > 0 
-    ? memories.slice(0, 5).map(m => `- ${m.content}`).join('\n')
-    : 'No memories yet.'
-
-  const dispositionText = character.disposition > 0 
-    ? `Friendly (${character.disposition}/100)` 
-    : character.disposition < 0 
-      ? `Hostile (${character.disposition}/100)` 
-      : `Neutral (${character.disposition}/100)`
-
-  return `
-Profile: ${character.name}, ${character.title}
-Personality: ${character.personality.join(', ')}
-Disposition: ${dispositionText}
-
-Background: ${character.backstory}
-
-Speech Style: ${character.speechPattern}
-
-Known Relationships:
-${relationshipText || 'No known relationships.'}
-
-Recent Memories:
-${memoryText}
-`
-}
-
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
 }
 
 export async function sendMessage(
-  character: Character,
-  worldId: string,
+  characterContext: string,
   message: string,
-  conversationHistory: { role: 'user' | 'character'; content: string }[]
+  conversationHistory: { role: 'user' | 'character'; content: string }[],
+  model: string = 'anthropic/claude-3-haiku'
 ): Promise<string> {
   if (!apiKey) {
     throw new Error('API not configured. Please set your API key in settings.')
   }
 
-  const context = await getCharacterContext(character, worldId)
-  
-  const personalityList = character.personality.join(', ')
-  
-  const systemPrompt = `You are ${character.name}, ${character.title} from a tabletop RPG.
+  const systemPrompt = `${characterContext}
 
-${context}
-
-STAY IN CHARACTER at all times. You are ${character.name}, not an AI.
-Personality traits: ${personalityList}
-Speech: ${character.speechPattern}
-Never break character. Never use markdown. Keep responses to 1-3 paragraphs max.`
+STAY IN CHARACTER at all times. Never break character. Never use markdown. Keep responses to 1-3 paragraphs max.`
 
   const chatMessages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
@@ -109,7 +45,7 @@ Never break character. Never use markdown. Keep responses to 1-3 paragraphs max.
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'anthropic/claude-3-haiku', // Default model
+      model,
       messages: chatMessages,
       max_tokens: 500,
       temperature: 0.8,
@@ -132,15 +68,14 @@ Never break character. Never use markdown. Keep responses to 1-3 paragraphs max.
 }
 
 export async function extractMemory(
-  character: Character,
-  worldId: string,
-  conversation: { role: 'user' | 'character'; content: string }[]
+  conversation: { role: 'user' | 'character'; content: string }[],
+  model: string = 'anthropic/claude-3-haiku'
 ): Promise<string | null> {
   if (!apiKey || conversation.length < 2) return null
 
   const lastMessages = conversation.slice(-6)
   
-  const systemPrompt = `Extract a brief memory (1-2 sentences) that ${character.name} should remember from this conversation. If nothing important happened, respond with exactly "NONE".`
+  const systemPrompt = `Extract a brief memory (1-2 sentences) that this character should remember from the user's messages. If nothing important happened, respond with exactly "NONE".`
 
   const userMessages = lastMessages
     .filter(m => m.role === 'user')
@@ -154,10 +89,10 @@ export async function extractMemory(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'anthropic/claude-3-haiku',
+      model,
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: `Conversation:\n${userMessages}` },
+        { role: 'user', content: `User messages:\n${userMessages}` },
       ],
       max_tokens: 100,
       temperature: 0.3,
@@ -167,20 +102,7 @@ export async function extractMemory(
   if (!response.ok) return null
 
   const data = await response.json()
-  const memory = data.choices?.[0]?.message?.content?.trim()
-  
-  if (memory === 'NONE' || !memory) return null
-  
-  await db.memories.add({
-    id: crypto.randomUUID(),
-    characterId: character.id,
-    worldId,
-    content: memory,
-    relevance: 7,
-    createdAt: new Date(),
-  })
-
-  return memory
+  return data.choices?.[0]?.message?.content?.trim() || null
 }
 
 export async function testConnection(key: string): Promise<boolean> {
@@ -201,4 +123,41 @@ export async function testConnection(key: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+// Helper to build character context string for AI
+export function buildCharacterContext(
+  character: { name: string; title: string; personality: string[]; disposition: number; backstory: string; speechPattern: string },
+  relationships: { targetName: string; relationType: string; label?: string; description: string }[],
+  memories: { content: string }[]
+): string {
+  const dispositionText = character.disposition > 0 
+    ? `Friendly (${character.disposition}/100)` 
+    : character.disposition < 0 
+      ? `Hostile (${character.disposition}/100)` 
+      : `Neutral (${character.disposition}/100)`
+
+  const relationshipText = relationships.length > 0
+    ? relationships.map(r => `- ${r.targetName} (${r.relationType}${r.label ? `: ${r.label}` : ''}): ${r.description}`).join('\n')
+    : 'No known relationships.'
+
+  const memoryText = memories.length > 0
+    ? memories.slice(0, 5).map(m => `- ${m.content}`).join('\n')
+    : 'No memories yet.'
+
+  return `
+Profile: ${character.name}, ${character.title}
+Personality: ${character.personality.join(', ')}
+Disposition: ${dispositionText}
+
+Background: ${character.backstory}
+
+Speech Style: ${character.speechPattern}
+
+Known Relationships:
+${relationshipText}
+
+Recent Memories:
+${memoryText}
+`
 }

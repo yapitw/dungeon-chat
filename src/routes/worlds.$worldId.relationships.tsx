@@ -1,28 +1,19 @@
-import { useState } from 'react'
-import { useLiveQuery } from 'dexie-react-hooks'
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
-import { db, type Character, type CharacterRelationship } from '../lib/db'
+import { api } from '../lib/api'
 import { ArrowLeft, Plus, Trash2, Edit2, Save, Lock } from 'lucide-react'
 
 const relationTypes = [
   'ally', 'enemy', 'family', 'friend', 'rival', 'merchant', 'ruler', 
-  'servant', 'guardian', 'lover', 'rival', 'comrade', 'employer', 'regular'
+  'servant', 'guardian', 'lover', 'comrade', 'employer', 'regular'
 ]
 
 export default function RelationshipsPage() {
   const { worldId } = useParams({ from: '/worlds/$worldId/relationships' })
   const navigate = useNavigate()
   
-  const world = useLiveQuery(() => db.worlds.get(worldId), [worldId])
-  const characters = useLiveQuery(
-    () => db.characters.where('worldId').equals(worldId).toArray(),
-    [worldId]
-  )
-  const relationships = useLiveQuery(
-    () => db.relationships.where('worldId').equals(worldId).toArray(),
-    [worldId]
-  )
-
+  const [characters, setCharacters] = useState<any[]>([])
+  const [relationships, setRelationships] = useState<any[]>([])
   const [isCreating, setIsCreating] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState({
@@ -35,6 +26,19 @@ export default function RelationshipsPage() {
     description: '',
   })
 
+  useEffect(() => {
+    loadData()
+  }, [worldId])
+
+  const loadData = async () => {
+    const [charsData, relsData] = await Promise.all([
+      api.characters.list(worldId!),
+      api.relationships.list(worldId!),
+    ])
+    setCharacters(charsData)
+    setRelationships(relsData)
+  }
+
   const resetForm = () => {
     setForm({
       sourceCharacterId: '',
@@ -46,45 +50,36 @@ export default function RelationshipsPage() {
       description: '',
     })
     setIsCreating(false)
+    setEditingId(null)
   }
 
   const handleCreate = async () => {
     if (!form.sourceCharacterId || !form.targetCharacterId) return
-    
-    await db.relationships.add({
-      id: crypto.randomUUID(),
-      worldId,
-      sourceCharacterId: form.sourceCharacterId,
-      targetCharacterId: form.targetCharacterId,
-      relationType: form.relationType,
-      label: form.label || undefined,
-      strength: form.strength,
-      isSecret: form.isSecret,
-      description: form.description,
-    })
+    await api.relationships.create(worldId!, form)
     resetForm()
+    loadData()
   }
 
   const handleUpdate = async () => {
     if (!editingId) return
-    
-    await db.relationships.update(editingId, {
+    await api.relationships.update(editingId, {
       relationType: form.relationType,
-      label: form.label || undefined,
+      label: form.label || null,
       strength: form.strength,
       isSecret: form.isSecret,
       description: form.description,
     })
-    setEditingId(null)
     resetForm()
+    loadData()
   }
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this relationship?')) return
-    await db.relationships.delete(id)
+    await api.relationships.delete(id)
+    loadData()
   }
 
-  const startEdit = (rel: CharacterRelationship) => {
+  const startEdit = (rel: any) => {
     setForm({
       sourceCharacterId: rel.sourceCharacterId,
       targetCharacterId: rel.targetCharacterId,
@@ -98,10 +93,6 @@ export default function RelationshipsPage() {
     setIsCreating(true)
   }
 
-  const getCharacter = (id: string): Character | undefined => {
-    return characters?.find(c => c.id === id)
-  }
-
   const getRelationStrength = (strength: number): string => {
     if (strength >= 80) return '💪 Strong'
     if (strength >= 50) return '🤝 Moderate'
@@ -109,21 +100,12 @@ export default function RelationshipsPage() {
     return '💔 Fragile'
   }
 
-  if (!world || !characters) {
-    return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="animate-pulse text-gray-400">Loading...</div>
-      </div>
-    )
-  }
-
   return (
     <div className="min-h-screen bg-[#0f0f1a] text-white">
-      {/* Header */}
       <header className="border-b border-[#1e1e3f] px-6 py-4">
         <div className="max-w-4xl mx-auto">
           <button
-            onClick={() => navigate({ to: '/worlds/$worldId', params: { worldId } })}
+            onClick={() => navigate({ to: '/worlds/$worldId', params: { worldId: worldId! } })}
             className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors mb-3"
           >
             <ArrowLeft className="w-4 h-4" />
@@ -134,7 +116,6 @@ export default function RelationshipsPage() {
               <span className="text-3xl">🔗</span>
               <div>
                 <h1 className="text-xl font-bold">Relationship Network</h1>
-                <p className="text-xs text-gray-500">{world.name}</p>
               </div>
             </div>
             <button
@@ -254,7 +235,7 @@ export default function RelationshipsPage() {
                 {editingId ? 'Update' : 'Create'}
               </button>
               <button
-                onClick={() => { resetForm(); setEditingId(null); }}
+                onClick={resetForm}
                 className="px-4 py-2 bg-[#333] hover:bg-[#444] rounded-lg transition-colors"
               >
                 Cancel
@@ -264,7 +245,7 @@ export default function RelationshipsPage() {
         )}
 
         {/* Relationships List */}
-        {relationships?.length === 0 && !isCreating ? (
+        {relationships.length === 0 && !isCreating ? (
           <div className="text-center py-16 bg-[#16213e] rounded-xl border border-[#0f3460]">
             <div className="text-5xl mb-4">🔗</div>
             <h3 className="text-xl font-semibold mb-2">No relationships yet</h3>
@@ -278,81 +259,75 @@ export default function RelationshipsPage() {
           </div>
         ) : (
           <div className="space-y-3">
-            {relationships?.map(rel => {
-              const source = getCharacter(rel.sourceCharacterId)
-              const target = getCharacter(rel.targetCharacterId)
-              if (!source || !target) return null
-              
-              return (
-                <div
-                  key={rel.id}
-                  className="bg-[#16213e] rounded-xl border border-[#0f3460] p-4"
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-4">
-                      {/* Source */}
-                      <div className="text-center">
-                        <div 
-                          className="w-10 h-10 rounded-lg flex items-center justify-center text-xl"
-                          style={{ backgroundColor: source.color + '33' }}
-                        >
-                          {source.avatar}
-                        </div>
-                        <div className="text-xs mt-1">{source.name.split(' ')[0]}</div>
+            {relationships.map(rel => (
+              <div
+                key={rel.id}
+                className="bg-[#16213e] rounded-xl border border-[#0f3460] p-4"
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-4">
+                    {/* Source */}
+                    <div className="text-center">
+                      <div 
+                        className="w-10 h-10 rounded-lg flex items-center justify-center text-xl"
+                        style={{ backgroundColor: rel.sourceCharacter.color + '33' }}
+                      >
+                        {rel.sourceCharacter.avatar}
                       </div>
-                      
-                      {/* Arrow & Type */}
-                      <div className="flex flex-col items-center">
-                        <div className="text-xs uppercase px-2 py-1 bg-[#9b59b6]/30 text-[#9b59b6] rounded">
-                          {rel.relationType}
-                        </div>
-                        {rel.label && (
-                          <div className="text-xs text-gray-400 mt-1">{rel.label}</div>
-                        )}
-                        <div className="text-xs text-gray-500 mt-1">
-                          {getRelationStrength(rel.strength)}
-                        </div>
-                        {rel.isSecret && (
-                          <Lock className="w-3 h-3 text-gray-500 mt-1" />
-                        )}
-                      </div>
-                      
-                      {/* Target */}
-                      <div className="text-center">
-                        <div 
-                          className="w-10 h-10 rounded-lg flex items-center justify-center text-xl"
-                          style={{ backgroundColor: target.color + '33' }}
-                        >
-                          {target.avatar}
-                        </div>
-                        <div className="text-xs mt-1">{target.name.split(' ')[0]}</div>
-                      </div>
+                      <div className="text-xs mt-1">{rel.sourceCharacter.name.split(' ')[0]}</div>
                     </div>
                     
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => startEdit(rel)}
-                        className="p-2 text-gray-400 hover:text-white transition-colors"
+                    {/* Arrow & Type */}
+                    <div className="flex flex-col items-center">
+                      <div className="text-xs uppercase px-2 py-1 bg-[#9b59b6]/30 text-[#9b59b6] rounded">
+                        {rel.relationType}
+                      </div>
+                      {rel.label && (
+                        <div className="text-xs text-gray-400 mt-1">{rel.label}</div>
+                      )}
+                      <div className="text-xs text-gray-500 mt-1">
+                        {getRelationStrength(rel.strength)}
+                      </div>
+                      {rel.isSecret && (
+                        <Lock className="w-3 h-3 text-gray-500 mt-1" />
+                      )}
+                    </div>
+                    
+                    {/* Target */}
+                    <div className="text-center">
+                      <div 
+                        className="w-10 h-10 rounded-lg flex items-center justify-center text-xl"
+                        style={{ backgroundColor: rel.targetCharacter.color + '33' }}
                       >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(rel.id)}
-                        className="p-2 text-gray-400 hover:text-red-400 transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                        {rel.targetCharacter.avatar}
+                      </div>
+                      <div className="text-xs mt-1">{rel.targetCharacter.name.split(' ')[0]}</div>
                     </div>
                   </div>
                   
-                  {rel.description && (
-                    <p className="text-sm text-gray-400 mt-3 pt-3 border-t border-[#0f3460]">
-                      {rel.description}
-                    </p>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => startEdit(rel)}
+                      className="p-2 text-gray-400 hover:text-white transition-colors"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(rel.id)}
+                      className="p-2 text-gray-400 hover:text-red-400 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
-              )
-            })}
+                
+                {rel.description && (
+                  <p className="text-sm text-gray-400 mt-3 pt-3 border-t border-[#0f3460]">
+                    {rel.description}
+                  </p>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </main>

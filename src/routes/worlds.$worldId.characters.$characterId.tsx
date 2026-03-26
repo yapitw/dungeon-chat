@@ -1,54 +1,106 @@
 import { useState, useEffect, useRef } from 'react'
-import { useLiveQuery } from 'dexie-react-hooks'
 import { useParams, useNavigate } from '@tanstack/react-router'
-import { db } from '../lib/db'
-import { sendMessage, extractMemory, hasOpenAI } from '../lib/ai'
+import { api, parsePersonality } from '../lib/api'
+import { sendMessage, extractMemory, initOpenAI, hasOpenAI, buildCharacterContext } from '../lib/ai'
 import { ArrowLeft, Send, Trash2, Edit2, Save, X, Plus, Minus, AlertCircle } from 'lucide-react'
+
+interface CharacterData {
+  id: string
+  worldId: string
+  name: string
+  title: string
+  avatar: string
+  color: string
+  personality: string
+  speechPattern: string
+  greeting: string
+  backstory: string
+  disposition: number
+  isAlive: boolean
+}
+
+interface MessageData {
+  id: string
+  role: string
+  content: string
+  createdAt: Date
+}
+
+interface MemoryData {
+  id: string
+  content: string
+}
+
+interface RelationshipData {
+  id: string
+  sourceCharacterId: string
+  targetCharacterId: string
+  relationType: string
+  label?: string
+  description: string
+  sourceCharacter: { name: string }
+  targetCharacter: { name: string }
+}
 
 export default function CharacterChatPage() {
   const { worldId, characterId } = useParams({ from: '/worlds/$worldId/characters/$characterId' })
   const navigate = useNavigate()
   
-  const world = useLiveQuery(() => db.worlds.get(worldId), [worldId])
-  const character = useLiveQuery(() => db.characters.get(characterId), [characterId])
-  const messages = useLiveQuery(
-    () => db.messages.where('characterId').equals(characterId).sortBy('createdAt'),
-    [characterId]
-  )
-  const memories = useLiveQuery(
-    () => db.memories.where('characterId').equals(characterId).reverse().sortBy('createdAt'),
-    [characterId]
-  )
-
-
+  const [character, setCharacter] = useState<CharacterData | null>(null)
+  const [messages, setMessages] = useState<MessageData[]>([])
+  const [memories, setMemories] = useState<MemoryData[]>([])
+  const [relationships, setRelationships] = useState<RelationshipData[]>([])
   const [input, setInput] = useState('')
   const [isTyping, setIsTyping] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isEditing, setIsEditing] = useState(false)
   const [editForm, setEditForm] = useState<any>(null)
+  const [model, setModel] = useState('anthropic/claude-3-haiku')
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    loadData()
+  }, [characterId])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  useEffect(() => {
-    if (character && !editForm) {
+  const loadData = async () => {
+    try {
+      const [charData, msgsData, memsData, relsData, settings] = await Promise.all([
+        api.characters.get(characterId!),
+        api.characters.messages(characterId!),
+        api.characters.memories(characterId!),
+        api.relationships.list(worldId!),
+        api.settings.get(),
+      ])
+      setCharacter(charData)
+      setMessages(msgsData)
+      setMemories(memsData)
+      setRelationships(relsData)
+      setModel(settings.model || 'anthropic/claude-3-haiku')
+      
+      if (settings.openaiApiKey) {
+        initOpenAI(settings.openaiApiKey)
+      }
+      
       setEditForm({
-        name: character.name,
-        title: character.title,
-        avatar: character.avatar,
-        color: character.color,
-        personality: character.personality.join(', '),
-        speechPattern: character.speechPattern,
-        greeting: character.greeting,
-        backstory: character.backstory,
-        disposition: character.disposition,
+        name: charData.name,
+        title: charData.title,
+        avatar: charData.avatar,
+        color: charData.color,
+        personality: parsePersonality(charData.personality).join(', '),
+        speechPattern: charData.speechPattern,
+        greeting: charData.greeting,
+        backstory: charData.backstory,
+        disposition: charData.disposition,
       })
+    } catch (e) {
+      console.error('Failed to load data:', e)
     }
-  }, [character])
+  }
 
   const handleSend = async () => {
     if (!input.trim() || isTyping || !character) return
@@ -58,43 +110,80 @@ export default function CharacterChatPage() {
     setIsTyping(true)
     setError(null)
 
-    // Add user message
-    await db.messages.add({
-      id: crypto.randomUUID(),
-      characterId,
-      worldId,
-      role: 'user',
-      content: userMessage,
-      createdAt: new Date(),
-    })
-
     try {
+      // Add user message to DB
+      await api.characters.addMessage(characterId!, {
+        worldId,
+        role: 'user',
+        content: userMessage,
+      })
+
+      // Add to local state
+      const newUserMsg = { id: Date.now().toString(), role: 'user', content: userMessage, createdAt: new Date() }
+      setMessages(prev => [...prev, newUserMsg])
+
       if (!hasOpenAI()) {
-        throw new Error('OpenAI not configured. Please add your API key in Settings.')
+        throw new Error('API not configured. Please add your API key in Settings.')
       }
 
-      // Build conversation history for AI
-      const conversationHistory = (messages ?? []).slice(-10).map(m => ({
+      // Build conversation history
+      const conversationHistory = messages.slice(-10).map(m => ({
         role: m.role as 'user' | 'character',
         content: m.content,
       }))
       conversationHistory.push({ role: 'user', content: userMessage })
 
-      // Get AI response
-      const response = await sendMessage(character, worldId, userMessage, conversationHistory)
+      // Build character context
+      const personality = parsePersonality(character.personality)
+      const charRelationships = relationships
+        .filter(r => r.sourceCharacterId === character.id || r.targetCharacterId === character.id)
+        .map(r => {
+          const isSource = r.sourceCharacterId === character.id
+          const otherName = isSource ? r.targetCharacter.name : r.sourceCharacter.name
+          return {
+            targetName: otherName,
+            relationType: r.relationType,
+            label: r.label,
+            description: r.description,
+          }
+        })
 
-      // Add character response
-      await db.messages.add({
-        id: crypto.randomUUID(),
-        characterId,
+      const context = buildCharacterContext(
+        { ...character, personality },
+        charRelationships,
+        memories
+      )
+
+      // Get AI response
+      const response = await sendMessage(context, userMessage, conversationHistory, model)
+
+      // Add response to DB
+      await api.characters.addMessage(characterId!, {
         worldId,
         role: 'character',
         content: response,
-        createdAt: new Date(),
       })
 
-      // Extract memory after conversation
-      await extractMemory(character, worldId, [...conversationHistory, { role: 'character' as const, content: response }])
+      // Add to local state
+      const newCharMsg = { id: (Date.now() + 1).toString(), role: 'character', content: response, createdAt: new Date() }
+      setMessages(prev => [...prev, newCharMsg])
+
+      // Extract memory
+      const memoryContent = await extractMemory(
+        [...conversationHistory, { role: 'character' as const, content: response }],
+        model
+      )
+
+      if (memoryContent) {
+        await api.characters.addMemory(characterId!, {
+          worldId,
+          content: memoryContent,
+          relevance: 7,
+        })
+        // Refresh memories
+        const memsData = await api.characters.memories(characterId!)
+        setMemories(memsData)
+      }
 
     } catch (err: any) {
       setError(err.message || 'Failed to get response')
@@ -111,33 +200,36 @@ export default function CharacterChatPage() {
   }
 
   const handleSaveEdit = async () => {
-    if (!character || !editForm) return
+    if (!editForm) return
     
-    await db.characters.update(characterId, {
+    await api.characters.update(characterId!, {
       name: editForm.name,
       title: editForm.title,
       avatar: editForm.avatar,
       color: editForm.color,
-      personality: editForm.personality.split(',').map((s: string) => s.trim()).filter(Boolean),
+      personality: JSON.stringify(editForm.personality.split(',').map((s: string) => s.trim()).filter(Boolean)),
       speechPattern: editForm.speechPattern,
       greeting: editForm.greeting,
       backstory: editForm.backstory,
       disposition: editForm.disposition,
-      updatedAt: new Date(),
     })
+    
+    setCharacter(prev => prev ? { ...prev, ...editForm } : null)
     setIsEditing(false)
   }
 
   const handleDeleteMemory = async (memoryId: string) => {
-    await db.memories.delete(memoryId)
+    await api.memories.delete(memoryId)
+    setMemories(prev => prev.filter(m => m.id !== memoryId))
   }
 
   const handleClearChat = async () => {
     if (!confirm('Clear all messages with this character?')) return
-    await db.messages.where('characterId').equals(characterId).delete()
+    await api.characters.clearMessages(characterId!)
+    setMessages([])
   }
 
-  if (!world || !character) {
+  if (!character) {
     return (
       <div className="flex items-center justify-center h-screen">
         <div className="animate-pulse text-gray-400">Loading...</div>
@@ -274,7 +366,7 @@ export default function CharacterChatPage() {
       {/* Header */}
       <header className="border-b border-[#1e1e3f] px-6 py-3 flex items-center gap-4">
         <button
-          onClick={() => navigate({ to: '/worlds/$worldId', params: { worldId } })}
+          onClick={() => navigate({ to: '/worlds/$worldId', params: { worldId: worldId! } })}
           className="text-gray-400 hover:text-white transition-colors"
         >
           <ArrowLeft className="w-5 h-5" />
@@ -323,8 +415,7 @@ export default function CharacterChatPage() {
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-        {/* Greeting message if no messages */}
-        {(!messages || messages.length === 0) && (
+        {messages.length === 0 && (
           <div className="text-center py-8">
             <div 
               className="w-16 h-16 rounded-full mx-auto flex items-center justify-center text-3xl mb-4"
@@ -337,7 +428,7 @@ export default function CharacterChatPage() {
           </div>
         )}
 
-        {messages?.map((msg) => (
+        {messages.map((msg) => (
           <div
             key={msg.id}
             className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
@@ -375,7 +466,6 @@ export default function CharacterChatPage() {
       <div className="border-t border-[#1e1e3f] p-4">
         <div className="flex gap-3 max-w-4xl mx-auto">
           <input
-            ref={inputRef}
             type="text"
             value={input}
             onChange={e => setInput(e.target.value)}
@@ -395,7 +485,7 @@ export default function CharacterChatPage() {
       </div>
 
       {/* Memory Panel */}
-      {memories && memories.length > 0 && (
+      {memories.length > 0 && (
         <div className="border-t border-[#1e1e3f] p-4 bg-[#0d0d1a]">
           <h3 className="text-sm font-semibold text-gray-400 mb-2">Character Memories</h3>
           <div className="flex gap-2 overflow-x-auto pb-2">

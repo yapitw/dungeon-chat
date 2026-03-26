@@ -1,6 +1,6 @@
-import { useLiveQuery } from 'dexie-react-hooks'
+import { useState, useEffect } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { db, seedDemoData } from '../lib/db'
+import { api } from '../lib/api'
 import { Globe, Plus, ChevronRight, Sword, Skull, Compass } from 'lucide-react'
 
 const systemIcons: Record<string, React.ReactNode> = {
@@ -12,28 +12,39 @@ const systemIcons: Record<string, React.ReactNode> = {
 
 export default function WorldsPage() {
   const navigate = useNavigate()
-  const worlds = useLiveQuery(() => db.worlds.toArray())
+  const [worlds, setWorlds] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    loadWorlds()
+  }, [])
+
+  const loadWorlds = async () => {
+    try {
+      const data = await api.worlds.list()
+      setWorlds(data)
+    } catch (e) {
+      console.error('Failed to load worlds:', e)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const handleCreateWorld = async () => {
-    const id = crypto.randomUUID()
-    await db.worlds.add({
-      id,
+    const world = await api.worlds.create({
       name: 'New World',
       description: 'A new adventure awaits...',
       system: 'dnd5e',
-      createdAt: new Date(),
-      updatedAt: new Date(),
     })
-    navigate({ to: '/worlds/$worldId', params: { worldId: id } })
+    navigate({ to: '/worlds/$worldId', params: { worldId: world.id } })
   }
 
   const handleSeedDemo = async () => {
-    await seedDemoData()
-    // Refresh
-    window.location.reload()
+    await api.seed()
+    loadWorlds()
   }
 
-  if (!worlds) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center h-screen">
         <div className="animate-pulse text-gray-400">Loading...</div>
@@ -43,7 +54,6 @@ export default function WorldsPage() {
 
   return (
     <div className="min-h-screen bg-[#0f0f1a] text-white">
-      {/* Header */}
       <header className="border-b border-[#1e1e3f] px-6 py-4">
         <div className="max-w-4xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -62,7 +72,6 @@ export default function WorldsPage() {
         </div>
       </header>
 
-      {/* Content */}
       <main className="max-w-4xl mx-auto px-6 py-8">
         <div className="flex items-center justify-between mb-8">
           <h2 className="text-2xl font-bold">Your Worlds</h2>
@@ -113,6 +122,7 @@ export default function WorldsPage() {
                       <p className="text-sm text-gray-400">{world.description}</p>
                       <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
                         <span className="uppercase px-2 py-0.5 bg-[#0f3460] rounded">{world.system}</span>
+                        <span>{world._count?.characters || 0} characters</span>
                       </div>
                     </div>
                   </div>
