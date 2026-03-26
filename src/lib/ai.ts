@@ -1,14 +1,18 @@
-import OpenAI from 'openai'
 import { db, type Character } from './db'
 
-let openai: OpenAI | null = null
+let apiKey: string | null = null
+let baseURL = 'https://openrouter.ai/api/v1'
 
-export function initOpenAI(apiKey: string) {
-  openai = new OpenAI({ apiKey })
+export function initOpenAI(key: string) {
+  apiKey = key
 }
 
 export function hasOpenAI(): boolean {
-  return openai !== null
+  return apiKey !== null && apiKey.length > 0
+}
+
+export function getAPIKey(): string | null {
+  return apiKey
 }
 
 async function getCharacterContext(character: Character, worldId: string): Promise<string> {
@@ -64,14 +68,19 @@ ${memoryText}
 `
 }
 
+interface ChatMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: string
+}
+
 export async function sendMessage(
   character: Character,
   worldId: string,
   message: string,
   conversationHistory: { role: 'user' | 'character'; content: string }[]
 ): Promise<string> {
-  if (!openai) {
-    throw new Error('OpenAI not configured. Please set your API key in settings.')
+  if (!apiKey) {
+    throw new Error('API not configured. Please set your API key in settings.')
   }
 
   const context = await getCharacterContext(character, worldId)
@@ -87,20 +96,34 @@ Personality traits: ${personalityList}
 Speech: ${character.speechPattern}
 Never break character. Never use markdown. Keep responses to 1-3 paragraphs max.`
 
-  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+  const chatMessages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
     ...conversationHistory.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     { role: 'user', content: message },
   ]
 
-  const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages,
-    max_tokens: 500,
-    temperature: 0.8,
+  const response = await fetch(`${baseURL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'anthropic/claude-3-haiku', // Default model
+      messages: chatMessages,
+      max_tokens: 500,
+      temperature: 0.8,
+    }),
   })
 
-  const content = response.choices[0]?.message?.content
+  if (!response.ok) {
+    const error = await response.text()
+    throw new Error(`API error: ${response.status} - ${error}`)
+  }
+
+  const data = await response.json()
+  const content = data.choices?.[0]?.message?.content
+  
   if (!content) {
     throw new Error('No response from AI')
   }
@@ -113,7 +136,7 @@ export async function extractMemory(
   worldId: string,
   conversation: { role: 'user' | 'character'; content: string }[]
 ): Promise<string | null> {
-  if (!openai || conversation.length < 2) return null
+  if (!apiKey || conversation.length < 2) return null
 
   const lastMessages = conversation.slice(-6)
   
@@ -124,17 +147,27 @@ export async function extractMemory(
     .map(m => m.content)
     .join('\n')
 
-  const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `Conversation:\n${userMessages}` },
-    ],
-    max_tokens: 100,
-    temperature: 0.3,
+  const response = await fetch(`${baseURL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'anthropic/claude-3-haiku',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `Conversation:\n${userMessages}` },
+      ],
+      max_tokens: 100,
+      temperature: 0.3,
+    }),
   })
 
-  const memory = response.choices[0]?.message?.content?.trim()
+  if (!response.ok) return null
+
+  const data = await response.json()
+  const memory = data.choices?.[0]?.message?.content?.trim()
   
   if (memory === 'NONE' || !memory) return null
   
@@ -148,4 +181,24 @@ export async function extractMemory(
   })
 
   return memory
+}
+
+export async function testConnection(key: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${baseURL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'anthropic/claude-3-haiku',
+        messages: [{ role: 'user', content: 'Hi' }],
+        max_tokens: 10,
+      }),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
 }
