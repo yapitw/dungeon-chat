@@ -1,9 +1,12 @@
 import express from 'express'
 import cors from 'cors'
-import { PrismaClient } from '../src/generated/prisma'
+import { PrismaClient } from '@prisma/client'
+import path from 'path'
+
+const dbPath = path.join(process.cwd(), 'prisma', 'dev.db')
+const prisma = new PrismaClient()
 
 const app = express()
-const prisma = new PrismaClient()
 
 app.use(cors())
 app.use(express.json())

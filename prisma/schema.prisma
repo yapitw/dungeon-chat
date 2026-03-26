@@ -1,10 +1,10 @@
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "sqlite"
+  url      = "file:./dev.db"
 }
 
 model World {
@@ -29,13 +29,11 @@ model Character {
   avatar      String
   color       String
 
-  // Personality
-  personality String   @default("[]") // JSON array stored as string for SQLite
+  personality String   @default("[]")
   speechPattern String
   greeting    String
   backstory   String
 
-  // State
   disposition Int      @default(0)
   isAlive    Boolean  @default(true)
   locationId String?
@@ -83,7 +81,7 @@ model ConversationMessage {
   id          String   @id @default(uuid())
   characterId String
   worldId     String
-  role        String   // "user" or "character"
+  role        String
   content     String
   createdAt   DateTime @default(now())
 
