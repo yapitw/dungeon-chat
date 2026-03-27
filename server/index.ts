@@ -1,10 +1,13 @@
 import express from 'express'
 import cors from 'cors'
 import { PrismaClient } from '@prisma/client'
+import { PrismaLibSql } from '@prisma/adapter-libsql'
+import { createClient } from '@libsql/client'
 import path from 'path'
 
 const dbPath = path.join(process.cwd(), 'prisma', 'dev.db')
-const prisma = new PrismaClient()
+const adapter = new PrismaLibSql({ url: `file:${dbPath}` })
+const prisma = new PrismaClient({ adapter })
 
 const app = express()
 
